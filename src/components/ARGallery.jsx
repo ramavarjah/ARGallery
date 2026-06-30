@@ -1,165 +1,130 @@
-import React, { Suspense, useState, useRef, useEffect } from 'react'; 
-import { Canvas, useLoader, useFrame } from '@react-three/fiber';
-import { XR, createXRStore } from '@react-three/xr';
-import { Text } from '@react-three/drei';
+import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
-
-// 1. Trimmed back to 3 photos, keeping the High-Res w_1200 URLs
-const galleryData = [
-  {
-    url: "https://static.wixstatic.com/media/8d95e1_3c27e0038d4c4ebe9378129f2f944905~mv2.png/v1/fit/w_1200,h_1200,q_90/file.png",
-    title: "Urban Geometry"
-  },
-  {
-    url: "https://static.wixstatic.com/media/8d95e1_94484720a77c43a897f12b6204fa5af1~mv2.png/v1/fit/w_1200,h_1200,q_90/file.png",
-    title: "Neon Nights"
-  },
-  {
-    url: "https://static.wixstatic.com/media/8d95e1_d8e40c00f58d47ccb40627457cdc1c96~mv2.png/v1/fit/w_1200,h_1200,q_90/file.png",
-    title: "Architectural Shift"
-  }
-];
-
-// 2. Restored the Interactive Photo Component
-const FramedInteractivePhoto = ({ position, rotation, url, title }) => {
-  const texture = useLoader(THREE.TextureLoader, url);
-  texture.anisotropy = 16; // Keeps the high-res texture crisp at angles
-
-  const [isHovered, setIsHovered] = useState(false);
-  const [isClicked, setIsClicked] = useState(false);
-  const groupRef = useRef();
-
-  // Restored the gentle breathing animation
-  useFrame((state) => {
-    if (!groupRef.current) return;
-    const time = state.clock.getElapsedTime();
-    const yOffset = Math.sin(time * 2 + position[0]) * 0.05;
-    groupRef.current.position.y = position[1] + yOffset;
-  });
-
-  return (
-    <group
-      ref={groupRef}
-      position={position}
-      rotation={rotation}
-      scale={isClicked ? 1.2 : 1} // Click to enlarge is back!
-      onClick={() => setIsClicked(!isClicked)}
-      onPointerOver={() => setIsHovered(true)}
-      onPointerOut={() => setIsHovered(false)}
-    >
-      {/* Kept the larger 1.6x1.6 frames */}
-      <mesh position={[0, 0, -0.05]} castShadow>
-        <boxGeometry args={[1.6, 1.6, 0.05]} />
-        <meshStandardMaterial color={isHovered ? "#555" : "#222"} />
-      </mesh>
-
-      <mesh position={[0, 0, 0]}>
-        <planeGeometry args={[1.5, 1.5]} />
-        <meshBasicMaterial map={texture} />
-      </mesh>
-
-      <Text
-        position={[0, -0.9, 0]}
-        fontSize={0.12}
-        color="white"
-        anchorX="center"
-        anchorY="top"
-        outlineWidth={0.005}
-        outlineColor="#000000"
-      >
-        {title}
-      </Text>
-    </group>
-  );
-};
-
-const store = createXRStore();
+import 'mind-ar/dist/mindar-face-three.prod.js'; // Imports the Face Tracking engine
 
 const ARGallery = () => {
-  // NEW: State to track if the phone actually supports AR
-  const [arSupported, setArSupported] = useState(true); 
+  const [activeProduct, setActiveProduct] = useState(null);
+  const [isTracking, setIsTracking] = useState(false);
+  
+  // We use a ref to hold the HTML div where the camera feed will be injected
+  const containerRef = useRef(null);
+  const mindarThreeRef = useRef(null);
 
-  // NEW: Check for WebXR support as soon as the page loads
+  // 1. Listen for the Wix Product Data
   useEffect(() => {
-    if ('xr' in navigator) {
-      navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-        setArSupported(supported);
-      });
-    } else {
-      setArSupported(false);
-    }
+    const handleWixMessage = (event) => {
+      if (event.data && event.data.type === 'LOAD_NEW_GLASSES') {
+        console.log("Received product from Wix:", event.data.data);
+        setActiveProduct(event.data.data);
+      }
+    };
+    window.addEventListener('message', handleWixMessage);
+    return () => window.removeEventListener('message', handleWixMessage);
   }, []);
+
+  // 2. Start the Face Tracking Engine
+  const startTryOn = async () => {
+    if (!activeProduct || !containerRef.current) return;
+    setIsTracking(true);
+
+    // Initialize MindAR Face Tracking attached to our container
+    const mindarThree = new window.MINDAR.FACE.MindARThree({
+      container: containerRef.current,
+    });
+    mindarThreeRef.current = mindarThree;
+
+    const { renderer, scene, camera } = mindarThree;
+
+    // Load the product image from Wix as a Three.js Texture
+    const textureLoader = new THREE.TextureLoader();
+    const texture = textureLoader.load(activeProduct.imageUrl);
+    texture.anisotropy = 16;
+
+    // Create the 3D Plane for the glasses using the Wix dimensions
+    // We make the material transparent so the background of the PNG is invisible
+    const geometry = new THREE.PlaneGeometry(
+      activeProduct.dimensions.width, 
+      activeProduct.dimensions.height
+    );
+    const material = new THREE.MeshBasicMaterial({ 
+      map: texture, 
+      transparent: true,
+      side: THREE.DoubleSide
+    });
+    const glassesMesh = new THREE.Mesh(geometry, material);
+
+    // Anchor point 168 is exactly on the bridge of the nose between the eyes!
+    const anchor = mindarThree.addAnchor(168); 
+    
+    // Attach the glasses to the nose bridge anchor
+    anchor.group.add(glassesMesh);
+
+    // Start the camera and the tracking engine
+    await mindarThree.start();
+
+    // The animation loop to keep rendering the glasses as the face moves
+    renderer.setAnimationLoop(() => {
+      renderer.render(scene, camera);
+    });
+  };
+
+  // 3. Stop Tracking (If the user closes the try-on)
+  const stopTryOn = () => {
+    if (mindarThreeRef.current) {
+      mindarThreeRef.current.stop();
+      mindarThreeRef.current.renderer.setAnimationLoop(null);
+    }
+    setIsTracking(false);
+  };
+
+  // Cleanup when the component unmounts
+  useEffect(() => {
+    return () => {
+      if (mindarThreeRef.current) {
+        mindarThreeRef.current.stop();
+      }
+    };
+  }, []);
+
   return (
-    <div className="w-full h-screen bg-gray-900 flex flex-col items-center justify-center text-white relative">
-      {/* <button
-        onClick={() => store.enterAR()}
-        className="absolute bottom-10 z-10 px-6 py-3 bg-blue-600 rounded-full font-bold shadow-lg hover:bg-blue-500 transition cursor-pointer"
-      >
-        Enter AR
-      </button> */}
-      {/* UPDATED BUTTON: Changes color and text if AR is disabled */}
-      <button
-        onClick={() => arSupported && store.enterAR()}
-        disabled={!arSupported}
-        className={`absolute bottom-10 z-10 px-6 py-3 rounded-full font-bold shadow-lg transition ${
-          arSupported 
-            ? "bg-blue-600 hover:bg-blue-500 cursor-pointer" 
-            : "bg-gray-600 cursor-not-allowed opacity-50"
-        }`}
-      >
-        {arSupported ? "Enter AR" : "AR Not Supported Here"}
-      </button>
+    <div className="w-full h-screen bg-gray-900 flex flex-col items-center justify-center text-white relative overflow-hidden">
+      
+      {/* The container where the Camera Feed will appear */}
+      <div 
+        ref={containerRef} 
+        className="absolute top-0 left-0 w-full h-full z-0"
+      ></div>
 
-      <Canvas shadows>
-        <XR store={store}>
-          <ambientLight intensity={1.5} />
-          <directionalLight
-            position={[0, 10, 5]}
-            intensity={2}
-            castShadow
-            shadow-mapSize={[1024, 1024]}
-          />
-
-          <Suspense fallback={null}>
-            {/* 3. Curved Museum Layout - Spaced out nicely to fit the big frames */}
-            <FramedInteractivePhoto
-              url={galleryData[0].url}
-              title={galleryData[0].title}
-              position={[-2.2, 1.5, -2.5]} 
-              rotation={[0, Math.PI / 8, 0]}
-            />
-
-            <FramedInteractivePhoto
-              url={galleryData[1].url}
-              title={galleryData[1].title}
-              position={[0, 1.5, -3]} 
-              rotation={[0, 0, 0]}
-            />
-
-            <FramedInteractivePhoto
-              url={galleryData[2].url}
-              title={galleryData[2].title}
-              position={[2.2, 1.5, -2.5]} 
-              rotation={[0, -Math.PI / 8, 0]}
-            />
-
-            {/* Kept the invisible shadow-catching floor */}
-            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
-              <planeGeometry args={[50, 50]} />
-              <shadowMaterial opacity={0.4} />
-            </mesh>
-          </Suspense>
-        </XR>
-      </Canvas>
-
-      <div className="absolute top-10 text-center pointer-events-none">
-        <h1 className="text-3xl font-bold mb-2">Lensopolis AR</h1>
-        {/* Helper text based on support */}
-        <p className="text-gray-400">
-          {arSupported ? "Curved gallery layout." : "Please use Chrome on an Android device."}
+      {/* UI Overlay */}
+      <div className="absolute top-10 text-center z-10 pointer-events-none drop-shadow-md bg-black/40 px-6 py-2 rounded-xl">
+        <h1 className="text-3xl font-bold mb-1">Lensopolis Try-On</h1>
+        <p className="text-gray-300">
+           {activeProduct ? `Ready to try: ${activeProduct.title}` : "Waiting for storefront..."}
         </p>
-        {/* <p className="text-gray-400">Curved gallery layout.</p> */}
       </div>
+
+      {/* Controls */}
+      <div className="absolute bottom-10 z-10 flex gap-4">
+        {!isTracking ? (
+          <button
+            onClick={startTryOn}
+            disabled={!activeProduct} 
+            className={`px-8 py-4 rounded-full font-bold shadow-xl transition text-lg ${
+              activeProduct ? "bg-blue-600 hover:bg-blue-500 cursor-pointer" : "bg-gray-600 cursor-not-allowed"
+            }`}
+          >
+            {activeProduct ? "Start Virtual Try-On" : "Loading..."}
+          </button>
+        ) : (
+          <button
+            onClick={stopTryOn}
+            className="px-8 py-4 rounded-full font-bold shadow-xl transition text-lg bg-red-600 hover:bg-red-500 cursor-pointer"
+          >
+            Close Camera
+          </button>
+        )}
+      </div>
+
     </div>
   );
 };
