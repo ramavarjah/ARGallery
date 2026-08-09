@@ -14,7 +14,7 @@
     "mind-ar": "^1.2.5",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "react-router-dom": "^7.15.0",
+    "react-router-dom": "^7.18.2",
     "three": "^0.150.0"
   },
   "devDependencies": {
